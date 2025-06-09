@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+*.log
+*.json
+.env
+venv/
+.envrc
+.idea/
+.vscode/
+.DS_Store
+translation_dictionary.json 

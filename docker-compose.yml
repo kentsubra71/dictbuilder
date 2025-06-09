@@ -1,0 +1,7 @@
+version: '3.8'
+services:
+  pdf-dictionary-builder:
+    build: .
+    volumes:
+      - .:/app
+    command: python extract_and_build_dictionary.py 
