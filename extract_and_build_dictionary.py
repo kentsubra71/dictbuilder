@@ -1,4 +1,4 @@
-import pypdfium2
+import pdfplumber
 import json
 import re
 import nltk
@@ -15,31 +15,73 @@ nltk.download('punkt')
 
 
 def extract_sentences_by_page(pdf_path, language='english'):
-    pdf = pypdfium2.PdfDocument(pdf_path)
-    pages_sentences = []
-    for page_num in range(len(pdf)):
-        page = pdf[page_num]
-        text = page.get_textpage().get_text_range()
-        text = text.replace('\n', ' ').replace('\r', ' ')
-        # Split on bullet points first
-        bullet_chunks = re.split(r'(•)', text)
-        sentences = []
-        i = 0
-        while i < len(bullet_chunks):
-            if bullet_chunks[i] == '•':
-                # Combine bullet with following text
-                if i + 1 < len(bullet_chunks):
-                    chunk = '•' + bullet_chunks[i + 1]
-                    sentences.append(chunk.strip())
-                    i += 2
-                else:
-                    i += 1
-            else:
-                # Tokenize non-bullet text
-                sentences.extend([s.strip() for s in sent_tokenize(bullet_chunks[i], language=language) if s.strip()])
-                i += 1
-        pages_sentences.append([s for s in sentences if s])
-    return pages_sentences
+    pages_entries = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            page_height = page.height
+            header_threshold = page_height * 0.1
+            footer_threshold = page_height * 0.9
+            words = page.extract_words() or []
+            # Group words into lines by y position
+            def group_words_to_lines(words, tolerance=2):
+                if not words:
+                    return []
+                words.sort(key=lambda w: (round(w['top']), w['x0']))
+                lines = []
+                current_y = None
+                current_line = []
+                for word in words:
+                    y = round(word['top'])
+                    if current_y is None or abs(y - current_y) <= tolerance:
+                        current_line.append(word)
+                        current_y = y
+                    else:
+                        if current_line:
+                            current_line.sort(key=lambda w: w['x0'])
+                            line_text = ' '.join(w['text'] for w in current_line)
+                            if line_text.strip():
+                                lines.append((current_y, line_text))
+                        current_line = [word]
+                        current_y = y
+                if current_line:
+                    current_line.sort(key=lambda w: w['x0'])
+                    line_text = ' '.join(w['text'] for w in current_line)
+                    if line_text.strip():
+                        lines.append((current_y, line_text))
+                return lines
+            lines_with_y = group_words_to_lines(words, tolerance=2)
+            # Separate header, body, footer lines
+            header_lines = [line for y, line in lines_with_y if y <= header_threshold]
+            footer_lines = [line for y, line in lines_with_y if y >= footer_threshold]
+            body_lines = [line for y, line in lines_with_y if header_threshold < y < footer_threshold]
+            # For header/footer, keep as lines
+            entries = []
+            entries.extend(header_lines)
+            # For body, split into sentences using bullet points and sentence-ending punctuation
+            body_text = ' '.join(body_lines)
+            # Split on bullet points first
+            bullet_chunks = re.split(r'(•)', body_text)
+            for i in range(len(bullet_chunks)):
+                chunk = bullet_chunks[i]
+                if chunk == '•' and i + 1 < len(bullet_chunks):
+                    next_chunk = bullet_chunks[i + 1]
+                    bullet_sentence = ('•' + next_chunk).strip()
+                    if bullet_sentence:
+                        entries.append(bullet_sentence)
+                elif chunk != '•':
+                    # Split on sentence-ending punctuation (English and Spanish)
+                    # Handles . ? ! ¿ ¡
+                    sentences = re.split(r'(?<=[\.!?¿¡])\s+', chunk)
+                    for s in sentences:
+                        s = s.strip()
+                        if s:
+                            entries.append(s)
+            # For footer, keep as lines
+            entries.extend(footer_lines)
+            # Remove empty entries
+            entries = [e for e in entries if e.strip()]
+            pages_entries.append(entries)
+    return pages_entries
 
 
 def split_sentences(pages_text, language='english'):
@@ -50,19 +92,8 @@ def split_sentences(pages_text, language='english'):
 
 
 def should_ignore(line):
-    # Add more patterns as needed
-    ignore_patterns = [
-        r'copyright',
-        r'mcgraw hill',
-        r'all rights reserved',
-        r'page \d+',
-        r'^\s*$',  # empty lines
-    ]
-    line_lower = line.lower()
-    for pat in ignore_patterns:
-        if re.search(pat, line_lower):
-            return True
-    return False
+    # Only ignore empty lines
+    return not line.strip()
 
 
 def normalize(text):
@@ -156,9 +187,9 @@ def main():
     spanish_pages_sentences = extract_sentences_by_page(SPANISH_PDF, language='spanish')
 
     # Debug: Print raw and split Spanish text for page 2 (index 1)
-    pdf = pypdfium2.PdfDocument(SPANISH_PDF)
-    page = pdf[1]
-    raw_text = page.get_textpage().get_text_range().replace('\n', ' ').replace('\r', ' ')
+    pdf = pdfplumber.open(SPANISH_PDF)
+    page = pdf.pages[1]
+    raw_text = page.extract_text().replace('\n', ' ').replace('\r', ' ')
     print('\n--- Raw Spanish text on page 2 ---')
     print(repr(raw_text))
     print('\n--- Spanish sentences on page 2 ---')
