@@ -1,9 +1,10 @@
 FROM python:3.11-slim
 
-# Install system dependencies for pypdfium2
+# Install system dependencies for pdfplumber (poppler-utils) and pypdfium2
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Set work directory

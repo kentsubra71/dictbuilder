@@ -2,4 +2,5 @@ pypdfium2
 nltk
 rapidfuzz
 sentence-transformers
-torch 
+torch
+pdfplumber 

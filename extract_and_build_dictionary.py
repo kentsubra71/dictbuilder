@@ -57,25 +57,30 @@ def extract_sentences_by_page(pdf_path, language='english'):
             # For header/footer, keep as lines
             entries = []
             entries.extend(header_lines)
-            # For body, split into sentences using bullet points and sentence-ending punctuation
+            # For body, join all lines, clean up whitespace, split on bullet points, then sentences
             body_text = ' '.join(body_lines)
+            body_text = re.sub(r'[\r\n\t]+', ' ', body_text)
+            body_text = re.sub(r' +', ' ', body_text)
             # Split on bullet points first
             bullet_chunks = re.split(r'(•)', body_text)
-            for i in range(len(bullet_chunks)):
+            i = 0
+            while i < len(bullet_chunks):
                 chunk = bullet_chunks[i]
                 if chunk == '•' and i + 1 < len(bullet_chunks):
                     next_chunk = bullet_chunks[i + 1]
                     bullet_sentence = ('•' + next_chunk).strip()
                     if bullet_sentence:
                         entries.append(bullet_sentence)
+                    i += 2
                 elif chunk != '•':
-                    # Split on sentence-ending punctuation (English and Spanish)
-                    # Handles . ? ! ¿ ¡
-                    sentences = re.split(r'(?<=[\.!?¿¡])\s+', chunk)
-                    for s in sentences:
+                    # Split into sentences using sent_tokenize
+                    for s in sent_tokenize(chunk, language=language):
                         s = s.strip()
                         if s:
                             entries.append(s)
+                    i += 1
+                else:
+                    i += 1
             # For footer, keep as lines
             entries.extend(footer_lines)
             # Remove empty entries
@@ -120,6 +125,26 @@ def is_numbers_symbols_only(s):
     return not re.search(r'[a-zA-Z]', s)
 
 
+def is_meaningful(entry):
+    entry = entry.strip()
+    # Ignore single letters, bullets, or very short non-alphanumeric entries
+    if len(entry) <= 2:
+        return False
+    # Ignore entries that are mostly numbers or symbols
+    if re.fullmatch(r'[_\d\s\+\-\=\*\/\.]+', entry):
+        return False
+    # Ignore entries that are just a single word and that word is a number or symbol
+    if re.fullmatch(r'[\d_]+', entry):
+        return False
+    # Ignore entries that are just a bullet or similar
+    if entry in {'•', '-', '–', '—'}:
+        return False
+    # Ignore entries that are just whitespace
+    if not re.search(r'[a-zA-Z]', entry):
+        return False
+    return True
+
+
 def build_dictionary_1to1_with_fallback(english_pages_sentences, spanish_pages_sentences, threshold=0.7, fuzzy_threshold=90):
     model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
     dictionary = {}
@@ -133,28 +158,31 @@ def build_dictionary_1to1_with_fallback(english_pages_sentences, spanish_pages_s
         for i in range(min(len(en_sentences), len(es_sentences))):
             en_sentence = en_sentences[i]
             es_sentence = es_sentences[i]
-            # Try exact match
-            if normalize(en_sentence) == normalize(es_sentence):
-                dictionary[en_sentence] = es_sentence
-                en_used.add(i)
-                es_used.add(i)
-                continue
-            # Try fuzzy match
-            if is_length_similar(en_sentence, es_sentence):
-                score = fuzz.ratio(en_sentence, es_sentence)
-                if score >= fuzzy_threshold:
+            # Only add if both sides are meaningful and not identical
+            if (
+                is_meaningful(en_sentence)
+                and is_meaningful(es_sentence)
+                and normalize(en_sentence) != normalize(es_sentence)
+            ):
+                # Try exact match
+                if normalize(en_sentence) == normalize(es_sentence):
+                    continue
+                # Try fuzzy match
+                if is_length_similar(en_sentence, es_sentence):
+                    score = fuzz.ratio(en_sentence, es_sentence)
+                    if score >= fuzzy_threshold:
+                        dictionary[en_sentence] = es_sentence
+                        en_used.add(i)
+                        es_used.add(i)
+                        continue
+                # Try embeddings
+                en_emb = model.encode(en_sentence, convert_to_tensor=True)
+                es_emb = model.encode(es_sentence, convert_to_tensor=True)
+                score = util.cos_sim(en_emb, es_emb)[0][0].item()
+                if score >= threshold:
                     dictionary[en_sentence] = es_sentence
                     en_used.add(i)
                     es_used.add(i)
-                    continue
-            # Try embeddings
-            en_emb = model.encode(en_sentence, convert_to_tensor=True)
-            es_emb = model.encode(es_sentence, convert_to_tensor=True)
-            score = util.cos_sim(en_emb, es_emb)[0][0].item()
-            if score >= threshold:
-                dictionary[en_sentence] = es_sentence
-                en_used.add(i)
-                es_used.add(i)
         # Fallback: try to match any remaining unmatched English sentences to any unmatched Spanish sentences using hybrid logic
         unmatched_en = [i for i in range(len(en_sentences)) if i not in en_used]
         unmatched_es = [i for i in range(len(es_sentences)) if i not in es_used]
@@ -166,8 +194,15 @@ def build_dictionary_1to1_with_fallback(english_pages_sentences, spanish_pages_s
                 best_idx_es = sim_matrix[idx_en].argmax()
                 best_score = sim_matrix[idx_en][best_idx_es]
                 j = unmatched_es[best_idx_es]
-                if best_score >= threshold:
-                    dictionary[en_sentences[i]] = es_sentences[j]
+                en_entry = en_sentences[i]
+                es_entry = es_sentences[j]
+                if (
+                    best_score >= threshold
+                    and is_meaningful(en_entry)
+                    and is_meaningful(es_entry)
+                    and normalize(en_entry) != normalize(es_entry)
+                ):
+                    dictionary[en_entry] = es_entry
                     en_used.add(i)
                     es_used.add(j)
     return dictionary
